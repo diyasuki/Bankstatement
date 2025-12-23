@@ -3,13 +3,15 @@
 import pandas as pd
 import fitz
 import os
-from img2table.document import Image
+from img2table.document import Image
+
 from img2table.ocr import EasyOCR
 import numpy as np
 import streamlit as st
 import cv2
 from datetime import datetime
-import io
+import io
+
 ocr = EasyOCR(lang=["en"])
 templates=""
 #PADDLE_PDX_DISABLE_DEV_MODEL_WL=1
@@ -69,7 +71,7 @@ if uploaded_file is not None:
 
                 # Decode PNG bytes to OpenCV BGR ndarray
                 np_buf = np.frombuffer(img_bytes, dtype=np.uint8)
-                bgr = cv2.imdecode(np_buf, cv2.IMREAD_COLOR)
+                bgr = cv2.imdecode(np_buf, cv2.IMREAD_UNCHANGED)
                 if bgr is None:
                     raise ValueError(f"Failed to decode page {page_index} image")
 
@@ -266,4 +268,5 @@ if uploaded_file is not None:
     st.dataframe(final_df)
 
     #final_df.to_csv(fl + '1.csv',encoding='utf-8-sig')
+
     #final_df.to_json(fl + '1.json',orient='records',indent=4)
