@@ -28,7 +28,9 @@ st.sidebar.markdown("""> Images affected by artifacts including partial occulsio
 st.sidebar.markdown(""" > Handwriting recognition on images containing tables will be significantly harder
                        due to infinite variations of handwriting styles and limitations of optical character recognition""")
 
-
+print(cv2.__version__)
+print("ximgproc:", hasattr(cv2, "ximgproc"))
+print("niBlackThreshold:", hasattr(cv2.ximgproc, "niBlackThreshold") if hasattr(cv2, "ximgproc") else None)
 ###################### loading images #######################
 uploaded_file = st.file_uploader("Choose an image | Accepted formats: only PDF", type=("pdf"))
 if uploaded_file is not None:
@@ -270,3 +272,4 @@ if uploaded_file is not None:
     #final_df.to_csv(fl + '1.csv',encoding='utf-8-sig')
 
     #final_df.to_json(fl + '1.json',orient='records',indent=4)
+
