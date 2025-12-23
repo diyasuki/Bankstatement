@@ -13,6 +13,8 @@ from datetime import datetime
 from skimage.filters import threshold_sauvola
 import io
 import img2table.tables.processing as proc
+import sys
+st.write("Python:", sys.version)
 os.environ["EASYOCR_MODULE_PATH"] = os.path.join(os.getcwd(), ".easyocr")
 
 @st.cache_resource
@@ -204,6 +206,7 @@ if uploaded_file is not None:
     st.subheader("Extracted Transactions")
     st.dataframe(final_df)
     
+
 
 
 
