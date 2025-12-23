@@ -6,9 +6,9 @@ PyMuPDF
 img2table[easyocr]
 pillow
 scikit-image
-easyocr
 opencv-python-headless
 frontend
+
 
 
 
