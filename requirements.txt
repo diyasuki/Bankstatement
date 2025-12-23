@@ -4,9 +4,9 @@ numpy==2.1.0
 pandas==2.2.3
 streamlit==1.50.0
 PyMuPDF==1.26.4
-
 img2table[easyocr]
-opencv-contrib-python
 opencv-contrib-python-headless
+easyocr
 Pillow
+
 
