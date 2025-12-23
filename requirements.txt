@@ -8,6 +8,7 @@ pillow
 scikit-image
 easyocr
 opencv-python-headless
+frontend
 
 
 
