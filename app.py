@@ -116,10 +116,10 @@ if uploaded_file is not None:
                 
                 pg=pg+1
         colname=full_df.columns[0]
-        full_df.to_csv(fl + '_Without.csv',encoding='utf-8-sig')
+        #full_df.to_csv(fl + '_Without.csv',encoding='utf-8-sig')
         full_df[colname] = full_df[colname].fillna(method='ffill')
         print(full_df)
-        full_df.to_csv(fl+'.csv',encoding='utf-8-sig')
+        #full_df.to_csv(fl+'.csv',encoding='utf-8-sig')
         df=full_df
 
     #for page_num, tables_on_page in pdf_tables.items():
@@ -265,5 +265,5 @@ if uploaded_file is not None:
     st.subheader("Extracted Transactions")
     st.dataframe(final_df)
 
-    final_df.to_csv(fl + '1.csv',encoding='utf-8-sig')
-    final_df.to_json(fl + '1.json',orient='records',indent=4)
+    #final_df.to_csv(fl + '1.csv',encoding='utf-8-sig')
+    #final_df.to_json(fl + '1.json',orient='records',indent=4)
