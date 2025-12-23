@@ -72,8 +72,7 @@ if uploaded_file is not None:
                 img_bytes = pix.tobytes("png")  # in-memory PNG bytes
                 with tempfile.TemporaryDirectory() as tmp:
 
-                    status.info(f"Processing page {pg} / {len(page_set)} ...")
-          
+                    
                     img_path = os.path.join(tmp, f"page_{pg}.png")
                     with open(img_path, "wb") as f:
                         f.write(png_bytes)
@@ -272,6 +271,7 @@ if uploaded_file is not None:
     #final_df.to_csv(fl + '1.csv',encoding='utf-8-sig')
 
     #final_df.to_json(fl + '1.json',orient='records',indent=4)
+
 
 
 
