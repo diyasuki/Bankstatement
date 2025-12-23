@@ -6,7 +6,7 @@ img2table[easyocr]
 pillow
 scikit-image
 opencv-python-headless
-frontend
+
 
 
 
