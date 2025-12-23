@@ -10,8 +10,31 @@ import numpy as np
 import streamlit as st
 import cv2
 from datetime import datetime
+from skimage.filters import threshold_sauvola
 import io
+def threshold_dark_areas_no_ximgproc(img, char_length=11):
+    """
+    Replacement for img2table.tables.threshold_dark_areas
+    Avoids cv2.ximgproc.niBlackThreshold (missing on Streamlit Cloud with EasyOCR)
+    """
+    # img is BGR uint8
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    if gray.dtype != np.uint8:
+        gray = gray.astype(np.uint8)
 
+    # window size must be odd and >= 3
+    win = int(char_length)
+    if win < 3:
+        win = 3
+    if win % 2 == 0:
+        win += 1
+
+    # Sauvola threshold (similar purpose to niBlackThreshold Sauvola)
+    th = threshold_sauvola(gray, window_size=win, k=0.2)
+
+    # Equivalent to THRESH_BINARY_INV (text dark -> white foreground in mask)
+    bin_img = (gray < th).astype(np.uint8) * 255
+    return bin_img
 ocr = EasyOCR(lang=["en"])
 templates=""
 #PADDLE_PDX_DISABLE_DEV_MODEL_WL=1
@@ -271,6 +294,7 @@ if uploaded_file is not None:
     #final_df.to_csv(fl + '1.csv',encoding='utf-8-sig')
 
     #final_df.to_json(fl + '1.json',orient='records',indent=4)
+
 
 
 
