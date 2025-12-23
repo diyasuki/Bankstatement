@@ -1,4 +1,3 @@
-fitz
 img2table
 numpy
 pandas
@@ -9,6 +8,7 @@ pillow
 scikit-image
 easyocr
 opencv-python-headless
+
 
 
 
