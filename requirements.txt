@@ -5,9 +5,9 @@ pandas
 streamlit
 PyMuPDF
 img2table[easyocr]
-opencv-contrib-python-headless
 easyocr
 Pillow
+
 
 
 
