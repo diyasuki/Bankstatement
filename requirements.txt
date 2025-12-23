@@ -7,4 +7,6 @@ PyMuPDF==1.26.4
 
 img2table[easyocr]
 opencv-contrib-python
+opencv-contrib-python-headless
 Pillow
+
