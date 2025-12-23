@@ -13,7 +13,14 @@ from datetime import datetime
 from skimage.filters import threshold_sauvola
 import io
 import img2table.tables.processing as proc
+os.environ["EASYOCR_MODULE_PATH"] = os.path.join(os.getcwd(), ".easyocr")
 
+@st.cache_resource
+def get_ocr():
+    # Cloud-safe: CPU only, no verbose spam
+    return EasyOCR(lang=["en"])
+
+ocr = get_ocr()
 def render_page_to_png_bytes(page, dpi=300):
     zoom = dpi / 72
     mat = fitz.Matrix(zoom, zoom)
@@ -198,6 +205,7 @@ if uploaded_file is not None:
     st.subheader("Extracted Transactions")
     st.dataframe(final_df)
     
+
 
 
 
