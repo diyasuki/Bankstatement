@@ -4,7 +4,7 @@ import pandas as pd
 import fitz
 import os
 from img2table.document import Image
-
+import tempfile
 from img2table.ocr import EasyOCR
 import numpy as np
 import streamlit as st
@@ -70,49 +70,49 @@ if uploaded_file is not None:
                 uploaded_file=image_path
                 pix = page.get_pixmap(matrix=magnify,alpha=False) # Render page to an image
                 img_bytes = pix.tobytes("png")  # in-memory PNG bytes
+                with tempfile.TemporaryDirectory() as tmp:
 
-                # Decode PNG bytes to OpenCV BGR ndarray
-                np_buf = np.frombuffer(img_bytes, dtype=np.uint8)
-                bgr = cv2.imdecode(np_buf, cv2.IMREAD_UNCHANGED)
-                if bgr is None:
-                    raise ValueError(f"Failed to decode page {page_index} image")
+                    status.info(f"Processing page {pg} / {len(pages)} ...")
+          
+                    img_path = os.path.join(tmp, f"page_{pg}.png")
+                    with open(img_path, "wb") as f:
+                        f.write(png_bytes)
 
-                # img2table expects an Image document; it can take a numpy array
-                img = Image(src=img_bytes)
-                #img = Image(pi)
-                extracted_tables = img.extract_tables(ocr=ocr, implicit_rows=True, implicit_columns = True, borderless_tables=True)
-        # 4. Process the extracted tables (e.g., convert to pandas DataFrame and print)
-                for table in extracted_tables:
-                    #print(f"Table found with shape: {table.shape}")
-                    # Get the table content as a pandas DataFrame
-                    df = table.df
-                    print(df)
-                    ext_df = pd.DataFrame(df)
-                    colname=ext_df.columns[0]
-                    ext_df = ext_df[~ext_df[colname].str.contains('Date', na=False)]
-                    full_df=pd.concat([full_df,ext_df])
-                    # try:
-                    #     cols_to_fill_indices = [0]
-                    #     cols_to_fill_labels = ext_df.columns[cols_to_fill_indices]
-                    #     ext_df[cols_to_fill_labels] = ext_df[cols_to_fill_labels].ffill()
-                        
-                    #     merged_df=ext_df
-                        
-                    #     #merged_df = ext_df.groupby([cols_to_fill_labels(0)])   
-
-                    #     #print('Merged Data')
-                    #     print(merged_df)      
-                    # except:
-                    #     try:
-                    #         cols_to_fill_indices = [0, 2,3]
-                    #         cols_to_fill_labels = ext_df.columns[cols_to_fill_indices]
-                    #         ext_df[cols_to_fill_labels] = ext_df[cols_to_fill_labels].ffill()
-                    #         merged_df=ext_df
-                    #         #merged_df = ext_df.groupby([cols_to_fill_labels(0)])   
-                    #         #print('Merged Data')
-                    #         print(merged_df)  
-                    #     except:
-                    #         pass      
+                    img = Image(src=img_path)
+                    #img = Image(pi)
+                    extracted_tables = img.extract_tables(ocr=ocr, implicit_rows=True, implicit_columns = True, borderless_tables=True)
+            # 4. Process the extracted tables (e.g., convert to pandas DataFrame and print)
+                    for table in extracted_tables:
+                        #print(f"Table found with shape: {table.shape}")
+                        # Get the table content as a pandas DataFrame
+                        df = table.df
+                        print(df)
+                        ext_df = pd.DataFrame(df)
+                        colname=ext_df.columns[0]
+                        ext_df = ext_df[~ext_df[colname].str.contains('Date', na=False)]
+                        full_df=pd.concat([full_df,ext_df])
+                        # try:
+                        #     cols_to_fill_indices = [0]
+                        #     cols_to_fill_labels = ext_df.columns[cols_to_fill_indices]
+                        #     ext_df[cols_to_fill_labels] = ext_df[cols_to_fill_labels].ffill()
+                            
+                        #     merged_df=ext_df
+                            
+                        #     #merged_df = ext_df.groupby([cols_to_fill_labels(0)])   
+    
+                        #     #print('Merged Data')
+                        #     print(merged_df)      
+                        # except:
+                        #     try:
+                        #         cols_to_fill_indices = [0, 2,3]
+                        #         cols_to_fill_labels = ext_df.columns[cols_to_fill_indices]
+                        #         ext_df[cols_to_fill_labels] = ext_df[cols_to_fill_labels].ffill()
+                        #         merged_df=ext_df
+                        #         #merged_df = ext_df.groupby([cols_to_fill_labels(0)])   
+                        #         #print('Merged Data')
+                        #         print(merged_df)  
+                        #     except:
+                        #         pass      
                     
                         
                         
@@ -272,4 +272,5 @@ if uploaded_file is not None:
     #final_df.to_csv(fl + '1.csv',encoding='utf-8-sig')
 
     #final_df.to_json(fl + '1.json',orient='records',indent=4)
+
 
