@@ -64,9 +64,9 @@ if uploaded_file is not None:
                 image_path = os.path.join('Images', image_filename)
                 uploaded_file=image_path
                 pix = page.get_pixmap(matrix=magnify) # Render page to an image
-                output_buffer = io.BytesIO()
-                pix.save(output_buffer, format="PNG") 
-                print(f"  Saved: {image_filename}")
+                #output_buffer = io.BytesIO()
+                #pix.save(output_buffer, format="PNG") 
+                #print(f"  Saved: {image_filename}")
                 img = Image(pix)
                 extracted_tables = img.extract_tables(ocr=ocr, implicit_rows=True, implicit_columns = True, borderless_tables=True)
         # 4. Process the extracted tables (e.g., convert to pandas DataFrame and print)
