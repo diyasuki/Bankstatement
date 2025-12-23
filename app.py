@@ -3,13 +3,11 @@
 import pandas as pd
 import fitz
 import os
-from img2table.document import Image
-from img2table.ocr import TesseractOCR
+from img2table.document import Image
 from img2table.ocr import EasyOCR
 import numpy as np
 import streamlit as st
-from datetime import datetime
-ocr = TesseractOCR()
+from datetime import datetime
 ocr = EasyOCR(lang=["en"])
 templates=""
 #PADDLE_PDX_DISABLE_DEV_MODEL_WL=1
