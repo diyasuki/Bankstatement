@@ -13,7 +13,7 @@ from datetime import datetime
 from skimage.filters import threshold_sauvola
 import io
 import img2table.tables.processing as proc
-proc.threshold_dark_areas = threshold_dark_areas_no_ximgproc
+
 def render_page_to_png_bytes(page, dpi=300):
     zoom = dpi / 72
     mat = fitz.Matrix(zoom, zoom)
@@ -177,6 +177,7 @@ print("ximgproc:", hasattr(cv2, "ximgproc"))
 print("niBlackThreshold:", hasattr(cv2.ximgproc, "niBlackThreshold") if hasattr(cv2, "ximgproc") else None)
 ###################### loading images #######################
 uploaded_file = st.file_uploader("Choose an image | Accepted formats: only PDF", type=("pdf"))
+proc.threshold_dark_areas = threshold_dark_areas_no_ximgproc
 if uploaded_file is not None:
 
 
@@ -197,6 +198,7 @@ if uploaded_file is not None:
     st.subheader("Extracted Transactions")
     st.dataframe(final_df)
     
+
 
 
 
