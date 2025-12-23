@@ -7,6 +7,7 @@ from img2table.document import Image
 from img2table.ocr import EasyOCR
 import numpy as np
 import streamlit as st
+import cv2
 from datetime import datetime
 import io
 ocr = EasyOCR(lang=["en"])
@@ -64,10 +65,17 @@ if uploaded_file is not None:
                 image_path = os.path.join('Images', image_filename)
                 uploaded_file=image_path
                 pix = page.get_pixmap(matrix=magnify) # Render page to an image
-                #output_buffer = io.BytesIO()
-                #pix.save(output_buffer, format="PNG") 
-                #print(f"  Saved: {image_filename}")
-                img = Image(pix)
+                img_bytes = pix.tobytes("png")  # in-memory PNG bytes
+
+                # Decode PNG bytes to OpenCV BGR ndarray
+                np_buf = np.frombuffer(img_bytes, dtype=np.uint8)
+                bgr = cv2.imdecode(np_buf, cv2.IMREAD_COLOR)
+                if bgr is None:
+                    raise ValueError(f"Failed to decode page {page_index} image")
+
+                # img2table expects an Image document; it can take a numpy array
+                img = Image(src=bgr)
+                #img = Image(pi)
                 extracted_tables = img.extract_tables(ocr=ocr, implicit_rows=True, implicit_columns = True, borderless_tables=True)
         # 4. Process the extracted tables (e.g., convert to pandas DataFrame and print)
                 for table in extracted_tables:
