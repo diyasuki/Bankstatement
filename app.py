@@ -74,7 +74,7 @@ if uploaded_file is not None:
                     raise ValueError(f"Failed to decode page {page_index} image")
 
                 # img2table expects an Image document; it can take a numpy array
-                img = Image(src=bgr)
+                img = Image(src=img_bytes)
                 #img = Image(pi)
                 extracted_tables = img.extract_tables(ocr=ocr, implicit_rows=True, implicit_columns = True, borderless_tables=True)
         # 4. Process the extracted tables (e.g., convert to pandas DataFrame and print)
