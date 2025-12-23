@@ -5,10 +5,10 @@ pandas
 streamlit
 pymupdf
 img2table[easyocr]
-easyocr
 pillow
 scikit-image
 opencv-python-headless
+
 
 
 
