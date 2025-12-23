@@ -19,8 +19,13 @@ os.environ["EASYOCR_MODULE_PATH"] = os.path.join(os.getcwd(), ".easyocr")
 
 @st.cache_resource
 def get_ocr():
-    # Cloud-safe: CPU only, no verbose spam
-    return EasyOCR(lang=["en"], gpu=False)
+    import traceback
+    try:
+        return EasyOCR(lang=["en"], gpu=False)
+    except Exception as e:
+        st.error("EasyOCR failed to initialize. Full error below:")
+        st.text(traceback.format_exc())
+        raise
 
 ocr = get_ocr()
 def render_page_to_png_bytes(page, dpi=300):
@@ -206,6 +211,7 @@ if uploaded_file is not None:
     st.subheader("Extracted Transactions")
     st.dataframe(final_df)
     
+
 
 
 
