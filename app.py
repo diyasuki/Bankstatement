@@ -75,7 +75,7 @@ if uploaded_file is not None:
                     
                     img_path = os.path.join(tmp, f"page_{pg}.png")
                     with open(img_path, "wb") as f:
-                        f.write(png_bytes)
+                        f.write(img_bytes)
 
                     img = Image(src=img_path)
                     #img = Image(pi)
@@ -271,6 +271,7 @@ if uploaded_file is not None:
     #final_df.to_csv(fl + '1.csv',encoding='utf-8-sig')
 
     #final_df.to_json(fl + '1.json',orient='records',indent=4)
+
 
 
 
