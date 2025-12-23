@@ -64,7 +64,7 @@ if uploaded_file is not None:
                 image_filename = f"{pdf_name}_page_{pg+1}.png"
                 image_path = os.path.join('Images', image_filename)
                 uploaded_file=image_path
-                pix = page.get_pixmap(matrix=magnify) # Render page to an image
+                pix = page.get_pixmap(matrix=magnify,alpha=False) # Render page to an image
                 img_bytes = pix.tobytes("png")  # in-memory PNG bytes
 
                 # Decode PNG bytes to OpenCV BGR ndarray
