@@ -18,7 +18,7 @@ os.environ["EASYOCR_MODULE_PATH"] = os.path.join(os.getcwd(), ".easyocr")
 @st.cache_resource
 def get_ocr():
     # Cloud-safe: CPU only, no verbose spam
-    return EasyOCR(lang=["en"])
+    return EasyOCR(lang=["en"], gpu=False)
 
 ocr = get_ocr()
 def render_page_to_png_bytes(page, dpi=300):
@@ -163,7 +163,7 @@ def threshold_dark_areas_no_ximgproc(img, char_length=11):
     # Equivalent to THRESH_BINARY_INV (text dark -> white foreground in mask)
     bin_img = (gray < th).astype(np.uint8) * 255
     return bin_img
-
+proc.threshold_dark_areas = threshold_dark_areas_no_ximgproc
 templates=""
 #PADDLE_PDX_DISABLE_DEV_MODEL_WL=1
 #ocr = PaddleOCR(lang="en",device="cpu") # Speciy the language
@@ -184,11 +184,10 @@ print("ximgproc:", hasattr(cv2, "ximgproc"))
 print("niBlackThreshold:", hasattr(cv2.ximgproc, "niBlackThreshold") if hasattr(cv2, "ximgproc") else None)
 ###################### loading images #######################
 uploaded_file = st.file_uploader("Choose an image | Accepted formats: only PDF", type=("pdf"))
-proc.threshold_dark_areas = threshold_dark_areas_no_ximgproc
 if uploaded_file is not None:
 
 
-    pdf_bytes = uploaded_file.read()
+    pdf_bytes = uploaded_file.getvalue()
 
     # Build table DF from PDF
     df = pdf_to_full_df(pdf_bytes, ocr, dpi=300)
@@ -205,6 +204,7 @@ if uploaded_file is not None:
     st.subheader("Extracted Transactions")
     st.dataframe(final_df)
     
+
 
 
 
