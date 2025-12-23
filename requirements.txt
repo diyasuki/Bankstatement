@@ -3,12 +3,13 @@ img2table
 numpy
 pandas
 streamlit
-pymupdf
+PyMuPDF
 img2table[easyocr]
 pillow
 scikit-image
 easyocr
 opencv-python-headless
+
 
 
 
