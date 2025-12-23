@@ -21,7 +21,7 @@ os.environ["EASYOCR_MODULE_PATH"] = os.path.join(os.getcwd(), ".easyocr")
 def get_ocr():
     import traceback
     try:
-        return EasyOCR(lang=["en"], gpu=False)
+        return EasyOCR(lang=["en"])
     except Exception as e:
         st.error("EasyOCR failed to initialize. Full error below:")
         st.text(traceback.format_exc())
@@ -211,6 +211,7 @@ if uploaded_file is not None:
     st.subheader("Extracted Transactions")
     st.dataframe(final_df)
     
+
 
 
 
