@@ -1,5 +1,5 @@
 fitz==0.0.1.dev2
 img2table==1.4.2
-numpy==2.4.0
+numpy==2.1.0
 pandas==2.2.3
 streamlit==1.50.0
