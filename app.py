@@ -55,7 +55,7 @@ if uploaded_file is not None:
         pdf_name = os.path.splitext(pdf_path)[0]
         #pdf_tables = pdf.extract_tables(ocr=ocr, implicit_rows=True, borderless_tables=True)
         df_fields = pd.DataFrame()
-        page_set = fitz.open(stream=uploaded_file.read(),filetyoe="pdf")
+        page_set = fitz.open(stream=uploaded_file.read(),filetype="pdf")
         pg=0
         full_df=pd.DataFrame()
         for page in page_set:
