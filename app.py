@@ -163,7 +163,7 @@ def threshold_dark_areas_no_ximgproc(img, char_length=11):
     # Equivalent to THRESH_BINARY_INV (text dark -> white foreground in mask)
     bin_img = (gray < th).astype(np.uint8) * 255
     return bin_img
-ocr = EasyOCR(lang=["en"])
+
 templates=""
 #PADDLE_PDX_DISABLE_DEV_MODEL_WL=1
 #ocr = PaddleOCR(lang="en",device="cpu") # Speciy the language
@@ -205,6 +205,7 @@ if uploaded_file is not None:
     st.subheader("Extracted Transactions")
     st.dataframe(final_df)
     
+
 
 
 
