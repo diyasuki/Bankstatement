@@ -6,7 +6,10 @@ streamlit
 PyMuPDF
 img2table[easyocr]
 easyocr
-Pillow
+pillow
+scikit-image
+opencv-python-headless
+
 
 
 
