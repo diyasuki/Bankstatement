@@ -141,7 +141,8 @@ def call_gemini_stream_sync(
 
     text = ""
     for chunk in stream:
-        if hasattr(chunk, "text") chunk.text:
+        if hasattr(chunk, "text"):
+            chunk.text:
             text += chunk.text
             if progress_queue:
                 progress_queue.put_nowait(page_index)
@@ -329,4 +330,5 @@ if st.session_state.extracted_json:
         "output.json",
         mime="application/json"
     )
+
 
