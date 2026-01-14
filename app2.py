@@ -34,7 +34,64 @@ if "extracted_json" not in st.session_state:
 def get_project_id_from_sa(uploaded_file):
     sa = json.loads(uploaded_file.getvalue().decode("utf-8"))
     return sa.get("project_id")
+def transactions_to_csv(data: dict) -> str:
+    """
+    Convert extracted bank statement JSON to CSV
+    with ONE ROW PER TRANSACTION.
+    """
 
+    if not isinstance(data, dict):
+        return ""
+
+    transactions = data.get("transactions", [])
+    if not transactions:
+        return ""
+
+    output = io.StringIO()
+
+    # Base (repeated) fields
+    base_fields = {
+        "bank_name": data.get("bank_name"),
+        "account_holder_name": data.get("account_holder_name"),
+        "account_number": data.get("account_number"),
+        "currency": data.get("currency"),
+        "statement_from": (data.get("statement_period") or {}).get("from"),
+        "statement_to": (data.get("statement_period") or {}).get("to"),
+    }
+
+    rows = []
+    for txn in transactions:
+        row = base_fields.copy()
+        row.update({
+            "txn_date": txn.get("date"),
+            "description": txn.get("description"),
+            "amount": txn.get("amount"),
+            "balance": txn.get("balance"),
+            "type": txn.get("type"),
+            "category": txn.get("category"),
+        })
+        rows.append(row)
+
+    fieldnames = [
+        "bank_name",
+        "account_holder_name",
+        "account_number",
+        "currency",
+        "statement_from",
+        "statement_to",
+        "txn_date",
+        "description",
+        "amount",
+        "balance",
+        "type",
+        "category",
+    ]
+
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+
+    return output.getvalue()
 
 def safe_json_loads(text: str):
     match = re.search(r"(\{[\s\S]*$|\[[\s\S]*$)", text)
@@ -304,8 +361,9 @@ if st.session_state.extracted_json:
     )
 
     download_csv.download_button(
-        "⬇️ Download CSV",
-        json_to_csv_string(st.session_state.extracted_json),
-        "output.csv",
-        mime="text/csv"
-    )
+    "⬇️ Download Transactions CSV",
+    transactions_to_csv(st.session_state.extracted_json),
+    "transactions.csv",
+    mime="text/csv"
+)
+
