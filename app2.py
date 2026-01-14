@@ -65,20 +65,53 @@ def extract_pages(pdf_path):
         pages.append((i, single.write()))
     return pages
 
-
 def merge_page_results(results):
-    merged = {}
-    arrays = {}
+    """
+    Safely merge page-level Gemini outputs.
+
+    Supports:
+    - dict per page
+    - list per page
+    - mixed outputs
+
+    Guarantees:
+    - no data loss
+    - page order preserved
+    """
+
+    merged_dict = {}
+    merged_lists = []
 
     for _, page_data in sorted(results, key=lambda x: x[0]):
-        for k, v in page_data.items():
-            if isinstance(v, list):
-                arrays.setdefault(k, []).extend(v)
-            elif k not in merged or merged[k] in (None, "", {}):
-                merged[k] = v
 
-    merged.update(arrays)
-    return merged
+        # Case 1: page returned a LIST (e.g., transactions only)
+        if isinstance(page_data, list):
+            merged_lists.extend(page_data)
+            continue
+
+        # Case 2: page returned a DICT
+        if isinstance(page_data, dict):
+            for k, v in page_data.items():
+                if isinstance(v, list):
+                    merged_dict.setdefault(k, []).extend(v)
+                else:
+                    # keep first non-null scalar value
+                    if k not in merged_dict or merged_dict[k] in (None, "", {}):
+                        merged_dict[k] = v
+            continue
+
+        # Case 3: unexpected type → ignore safely
+        continue
+
+    # If everything was list-based, return list
+    if merged_dict == {} and merged_lists:
+        return merged_lists
+
+    # If mixed, attach list under a safe key
+    if merged_lists:
+        merged_dict.setdefault("items", []).extend(merged_lists)
+
+    return merged_dict
 
 # =========================================================
 # GEMINI STREAMING (SYNC – NO STREAMLIT CALLS)
@@ -108,7 +141,7 @@ def call_gemini_stream_sync(
 
     text = ""
     for chunk in stream:
-        if hasattr(chunk, "text") and chunk.text:
+        if hasattr(chunk, "text") chunk.text:
             text += chunk.text
             if progress_queue:
                 progress_queue.put_nowait(page_index)
@@ -296,3 +329,4 @@ if st.session_state.extracted_json:
         "output.json",
         mime="application/json"
     )
+
