@@ -111,18 +111,47 @@ def json_to_csv_string(data) -> str:
     return output.getvalue()
 
 
+
 def safe_json_loads(text: str):
-    match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
+    """
+    Robust JSON parser for Gemini responses:
+    - Extracts JSON
+    - Repairs common truncation issues
+    - Recovers partial JSON safely
+    """
+
+    # 1. Extract JSON-like content
+    match = re.search(r"(\{[\s\S]*$|\[[\s\S]*$)", text)
     if not match:
-        raise ValueError("No JSON found in Gemini response")
+        raise ValueError("No JSON object or array found in Gemini response")
 
     json_str = match.group(1)
+
+    # 2. Remove markdown fences if any
+    json_str = re.sub(r"^```json", "", json_str)
+    json_str = re.sub(r"```$", "", json_str)
+
+    # 3. Normalize whitespace
     json_str = json_str.replace("\n", " ")
+
+    # 4. Fix trailing commas
     json_str = re.sub(r",\s*}", "}", json_str)
     json_str = re.sub(r",\s*]", "]", json_str)
 
-    return json.loads(json_str)
+    # 5. HARD TRUNCATION RECOVERY
+    # Try progressively trimming until valid JSON is found
+    for i in range(len(json_str), 0, -1):
+        try:
+            candidate = json_str[:i]
+            if candidate.count("{") == candidate.count("}"):
+                return json.loads(candidate)
+        except Exception:
+            continue
 
+    raise ValueError(
+        "Gemini returned unrecoverable malformed JSON "
+        "(likely token cutoff)."
+    )
 # =========================================================
 # GEMINI EXTRACTION
 # =========================================================
@@ -287,3 +316,4 @@ if st.session_state.extracted_json:
         file_name="output.csv",
         mime="text/csv"
     )
+
