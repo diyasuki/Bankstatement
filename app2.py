@@ -6,29 +6,22 @@ import csv
 import io
 import tempfile
 import os
+import fitz  # PyMuPDF
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from google.oauth2 import service_account
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
 
 # =========================================================
-# SUPPORTED VERTEX AI LOCATIONS
+# CONFIG
 # =========================================================
 VERTEX_LOCATIONS = [
-    "us-central1",
-    "us-east1",
-    "us-west1",
-    "us-west4",
-    "europe-west1",
-    "europe-west2",
-    "europe-west4",
-    "asia-east1",
-    "asia-east2",
-    "asia-northeast1",
-    "asia-northeast3",
-    "asia-south1",
-    "australia-southeast1"
+    "us-central1", "us-east1", "us-west1", "us-west4",
+    "europe-west1", "asia-east1", "asia-south1"
 ]
+
+MAX_PARALLEL_WORKERS = 4   # Safe default for Vertex
 
 # =========================================================
 # SESSION STATE
@@ -40,106 +33,21 @@ if "extracted_json" not in st.session_state:
 # HELPERS
 # =========================================================
 def get_project_id_from_sa(uploaded_file):
-    try:
-        sa_json = json.loads(uploaded_file.getvalue().decode("utf-8"))
-        return sa_json.get("project_id")
-    except Exception:
-        return None
-
-
-def load_prompt_from_file(uploaded_file) -> str:
-    return uploaded_file.read().decode("utf-8")
-
-
-def get_first_response_text_from_stream(stream, status_box):
-    final_text = ""
-    for chunk in stream:
-        if hasattr(chunk, "text") and chunk.text:
-            final_text += chunk.text
-            status_box.info("🔄 Gemini processing...")
-    return final_text
-
-
-# =========================================================
-# JSON → CSV (SCHEMA-AGNOSTIC)
-# =========================================================
-def flatten_json(obj, parent_key="", sep="."):
-    items = {}
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            new_key = f"{parent_key}{sep}{k}" if parent_key else k
-            items.update(flatten_json(v, new_key, sep))
-    elif isinstance(obj, list):
-        items[parent_key] = obj
-    else:
-        items[parent_key] = obj
-    return items
-
-
-def json_to_csv_string(data) -> str:
-    output = io.StringIO()
-    rows = []
-
-    if isinstance(data, list):
-        for item in data:
-            rows.append(flatten_json(item))
-
-    elif isinstance(data, dict):
-        flat = flatten_json(data)
-        array_fields = {
-            k: v for k, v in flat.items()
-            if isinstance(v, list) and v and isinstance(v[0], dict)
-        }
-
-        if array_fields:
-            for array_key, array_items in array_fields.items():
-                for item in array_items:
-                    row = flat.copy()
-                    row.pop(array_key)
-                    row.update(flatten_json(item, array_key))
-                    rows.append(row)
-        else:
-            rows.append(flat)
-
-    if not rows:
-        return ""
-
-    fieldnames = sorted({k for row in rows for k in row.keys()})
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(rows)
-    return output.getvalue()
-
+    sa = json.loads(uploaded_file.getvalue().decode("utf-8"))
+    return sa.get("project_id")
 
 
 def safe_json_loads(text: str):
-    """
-    Robust JSON parser for Gemini responses:
-    - Extracts JSON
-    - Repairs common truncation issues
-    - Recovers partial JSON safely
-    """
-
-    # 1. Extract JSON-like content
     match = re.search(r"(\{[\s\S]*$|\[[\s\S]*$)", text)
     if not match:
-        raise ValueError("No JSON object or array found in Gemini response")
+        raise ValueError("No JSON found")
 
     json_str = match.group(1)
-
-    # 2. Remove markdown fences if any
-    json_str = re.sub(r"^```json", "", json_str)
-    json_str = re.sub(r"```$", "", json_str)
-
-    # 3. Normalize whitespace
+    json_str = re.sub(r"```json|```", "", json_str)
     json_str = json_str.replace("\n", " ")
-
-    # 4. Fix trailing commas
     json_str = re.sub(r",\s*}", "}", json_str)
     json_str = re.sub(r",\s*]", "]", json_str)
 
-    # 5. HARD TRUNCATION RECOVERY
-    # Try progressively trimming until valid JSON is found
     for i in range(len(json_str), 0, -1):
         try:
             candidate = json_str[:i]
@@ -148,49 +56,31 @@ def safe_json_loads(text: str):
         except Exception:
             continue
 
-    raise ValueError(
-        "Gemini returned unrecoverable malformed JSON "
-        "(likely token cutoff)."
-    )
-# =========================================================
-# GEMINI EXTRACTION
-# =========================================================
-def extract_from_pdf(
-    pdf_path: str,
-    prompt_text: str,
-    service_account_path: str,
-    project_id: str,
-    location: str,
-    status_box
-) -> dict:
+    raise ValueError("Unrecoverable JSON")
 
-    credentials = service_account.Credentials.from_service_account_file(
-        service_account_path,
-        scopes=["https://www.googleapis.com/auth/cloud-platform"]
-    )
 
-    vertexai.init(
-        project=project_id,
-        location=location,
-        credentials=credentials
-    )
+def extract_pages(pdf_path):
+    doc = fitz.open(pdf_path)
+    pages = []
 
-    model = GenerativeModel("gemini-2.5-flash")
+    for i in range(len(doc)):
+        page = doc[i]
+        pdf_bytes = fitz.open(stream=page.get_pdf_bytes(), filetype="pdf").write()
+        pages.append((i, pdf_bytes))
 
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
+    return pages
 
-    pdf_part = Part.from_dict({
+
+def call_gemini(pdf_bytes, prompt, model, status_box, page_index=None):
+    part = Part.from_dict({
         "inline_data": {
             "mime_type": "application/pdf",
-            "data": base64.b64encode(pdf_bytes).decode("utf-8")
+            "data": base64.b64encode(pdf_bytes).decode()
         }
     })
 
-    status_box.info("📤 Sending PDF to Gemini...")
-
-    response_stream = model.generate_content(
-        contents=[pdf_part, prompt_text],
+    stream = model.generate_content(
+        contents=[part, prompt],
         generation_config=GenerationConfig(
             temperature=0.0,
             response_mime_type="application/json"
@@ -198,122 +88,144 @@ def extract_from_pdf(
         stream=True
     )
 
-    text = get_first_response_text_from_stream(response_stream, status_box)
+    text = ""
+    for c in stream:
+        if hasattr(c, "text"):
+            text += c.text
+
     parsed = safe_json_loads(text)
+    return page_index, parsed
 
-    if isinstance(parsed, list) and len(parsed) == 1:
-        return parsed[0]
 
-    return parsed
+# =========================================================
+# MERGE LOGIC (ORDER-SAFE)
+# =========================================================
+def merge_page_results(results):
+    merged = {}
+    arrays = {}
+
+    for _, page_data in sorted(results, key=lambda x: x[0]):
+        for k, v in page_data.items():
+            if isinstance(v, list):
+                arrays.setdefault(k, []).extend(v)
+            elif k not in merged or merged[k] in (None, "", {}):
+                merged[k] = v
+
+    merged.update(arrays)
+    return merged
+
+
+# =========================================================
+# EXTRACTION MODES
+# =========================================================
+def extract_full_document(pdf_path, prompt, creds, project_id, location, status_box):
+    vertexai.init(project=project_id, location=location, credentials=creds)
+    model = GenerativeModel("gemini-2.5-flash")
+
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+
+    _, result = call_gemini(pdf_bytes, prompt, model, status_box)
+    return result
+
+
+def extract_parallel_pages(pdf_path, prompt, creds, project_id, location, status_box):
+    vertexai.init(project=project_id, location=location, credentials=creds)
+    model = GenerativeModel("gemini-2.5-flash")
+
+    pages = extract_pages(pdf_path)
+    results = []
+
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
+        futures = [
+            executor.submit(call_gemini, b, prompt, model, status_box, i)
+            for i, b in pages
+        ]
+
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    return merge_page_results(results)
 
 # =========================================================
 # STREAMLIT UI
 # =========================================================
 st.set_page_config(page_title="Bank Statement Extractor", layout="wide")
-
 st.title("📄 Bank Statement Extraction")
-st.caption("Gemini • Vertex AI • Auto Project Detection • JSON → CSV")
 
 # ---------------- SIDEBAR ----------------
 with st.sidebar:
-    st.header("🔐 Authentication")
+    service_account_file = st.file_uploader("Service Account JSON", type=["json"])
 
-    service_account_file = st.file_uploader(
-        "Service Account JSON",
-        type=["json"]
-    )
+    project_id = get_project_id_from_sa(service_account_file) if service_account_file else None
+    if project_id:
+        st.text_input("Project ID", project_id, disabled=True)
 
-    project_id = None
-    if service_account_file:
-        project_id = get_project_id_from_sa(service_account_file)
-        if project_id:
-            st.text_input(
-                "GCP Project ID (auto-detected)",
-                value=project_id,
-                disabled=True
-            )
-        else:
-            st.error("❌ project_id not found in service account")
-
-    location = st.selectbox(
-        "Vertex AI Location",
-        VERTEX_LOCATIONS,
-        index=VERTEX_LOCATIONS.index("us-central1")
+    location = st.selectbox("Vertex AI Location", VERTEX_LOCATIONS)
+    mode = st.radio(
+        "Extraction Mode",
+        ["Full Document (Single Call)", "Parallel Page Processing"],
+        index=1
     )
 
 # ---------------- MAIN ----------------
-left_col, right_col = st.columns([1, 1.4])
+left, right = st.columns([1, 1.4])
 
-with left_col:
-    st.header("📂 Inputs")
+with left:
     pdf_file = st.file_uploader("Upload PDF", type=["pdf"])
     prompt_file = st.file_uploader("Upload Prompt (.txt)", type=["txt"])
-    extract_btn = st.button("🚀 Run Extraction", use_container_width=True)
+    run = st.button("🚀 Run Extraction", use_container_width=True)
     status_box = st.empty()
 
-with right_col:
-    st.header("📊 Extracted JSON")
-    json_placeholder = st.empty()
-    download_json_placeholder = st.empty()
-    convert_csv_placeholder = st.empty()
+with right:
+    output = st.empty()
+    dl_json = st.empty()
+    dl_csv = st.empty()
 
 # =========================================================
-# ACTIONS
+# ACTION
 # =========================================================
-if extract_btn:
-    if not pdf_file or not prompt_file or not service_account_file:
-        st.error("❗ Upload PDF, Prompt, and Service Account JSON")
+if run:
+    if not all([pdf_file, prompt_file, service_account_file]):
+        st.error("Upload PDF, Prompt, and Service Account")
         st.stop()
 
-    if not project_id:
-        st.error("❗ Invalid service account (project_id missing)")
-        st.stop()
+    creds = service_account.Credentials.from_service_account_file(
+        tempfile.NamedTemporaryFile(delete=False, suffix=".json").name,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        pdf_path = os.path.join(tmpdir, pdf_file.name)
-        sa_path = os.path.join(tmpdir, service_account_file.name)
-
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = os.path.join(tmp, pdf_file.name)
         with open(pdf_path, "wb") as f:
             f.write(pdf_file.read())
 
-        with open(sa_path, "wb") as f:
-            f.write(service_account_file.read())
-
-        prompt_text = load_prompt_from_file(prompt_file)
-
-        status_box.info("⏳ Extracting...")
+        prompt = prompt_file.read().decode()
 
         try:
-            st.session_state.extracted_json = extract_from_pdf(
-                pdf_path,
-                prompt_text,
-                sa_path,
-                project_id,
-                location,
-                status_box
-            )
+            if "Parallel" in mode:
+                st.session_state.extracted_json = extract_parallel_pages(
+                    pdf_path, prompt, creds, project_id, location, status_box
+                )
+            else:
+                st.session_state.extracted_json = extract_full_document(
+                    pdf_path, prompt, creds, project_id, location, status_box
+                )
+
             status_box.success("✅ Extraction completed")
+
         except Exception as e:
             status_box.error("❌ Extraction failed")
             st.exception(e)
 
 # =========================================================
-# RENDER RESULTS
+# RENDER
 # =========================================================
 if st.session_state.extracted_json:
-    json_placeholder.json(st.session_state.extracted_json)
+    output.json(st.session_state.extracted_json)
 
-    download_json_placeholder.download_button(
-        "⬇️ Download JSON",
-        data=json.dumps(st.session_state.extracted_json, indent=2),
-        file_name="output.json",
-        mime="application/json"
+    dl_json.download_button(
+        "⬇ Download JSON",
+        json.dumps(st.session_state.extracted_json, indent=2),
+        "output.json"
     )
-
-    convert_csv_placeholder.download_button(
-        "🔄 Convert JSON → CSV",
-        data=json_to_csv_string(st.session_state.extracted_json),
-        file_name="output.csv",
-        mime="text/csv"
-    )
-
