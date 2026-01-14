@@ -4,17 +4,31 @@ import json
 import re
 import csv
 import io
-from google.oauth2 import service_account
-import vertexai
-from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
 import tempfile
 import os
 
+from google.oauth2 import service_account
+import vertexai
+from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
+
 # =========================================================
-# CONFIG
+# SUPPORTED VERTEX AI LOCATIONS
 # =========================================================
-PROJECT_ID = "artificialintelligencemodisoft"
-LOCATION = "us-central1"
+VERTEX_LOCATIONS = [
+    "us-central1",
+    "us-east1",
+    "us-west1",
+    "us-west4",
+    "europe-west1",
+    "europe-west2",
+    "europe-west4",
+    "asia-east1",
+    "asia-east2",
+    "asia-northeast1",
+    "asia-northeast3",
+    "asia-south1",
+    "australia-southeast1"
+]
 
 # =========================================================
 # SESSION STATE
@@ -25,6 +39,18 @@ if "extracted_json" not in st.session_state:
 # =========================================================
 # HELPERS
 # =========================================================
+def get_project_id_from_sa(uploaded_file):
+    try:
+        sa_json = json.loads(uploaded_file.getvalue().decode("utf-8"))
+        return sa_json.get("project_id")
+    except Exception:
+        return None
+
+
+def load_prompt_from_file(uploaded_file) -> str:
+    return uploaded_file.read().decode("utf-8")
+
+
 def get_first_response_text_from_stream(stream, status_box):
     final_text = ""
     for chunk in stream:
@@ -34,19 +60,11 @@ def get_first_response_text_from_stream(stream, status_box):
     return final_text
 
 
-def load_prompt_from_file(uploaded_file) -> str:
-    return uploaded_file.read().decode("utf-8")
-
-
 # =========================================================
-# GENERIC JSON → CSV (SCHEMA AGNOSTIC)
+# JSON → CSV (SCHEMA-AGNOSTIC)
 # =========================================================
 def flatten_json(obj, parent_key="", sep="."):
-    """
-    Flatten nested JSON objects using dot notation
-    """
     items = {}
-
     if isinstance(obj, dict):
         for k, v in obj.items():
             new_key = f"{parent_key}{sep}{k}" if parent_key else k
@@ -55,17 +73,10 @@ def flatten_json(obj, parent_key="", sep="."):
         items[parent_key] = obj
     else:
         items[parent_key] = obj
-
     return items
 
 
 def json_to_csv_string(data) -> str:
-    """
-    Convert ANY JSON to CSV:
-    - Nested objects flattened
-    - Arrays exploded into rows
-    - No schema assumptions
-    """
     output = io.StringIO()
     rows = []
 
@@ -75,7 +86,6 @@ def json_to_csv_string(data) -> str:
 
     elif isinstance(data, dict):
         flat = flatten_json(data)
-
         array_fields = {
             k: v for k, v in flat.items()
             if isinstance(v, list) and v and isinstance(v[0], dict)
@@ -98,32 +108,20 @@ def json_to_csv_string(data) -> str:
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(rows)
-
     return output.getvalue()
+
+
 def safe_json_loads(text: str):
-    """
-    Robust JSON parser for Gemini responses
-    """
-    # 1. Extract the largest JSON-like block
     match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
     if not match:
-        raise ValueError("No JSON object or array found in Gemini response")
+        raise ValueError("No JSON found in Gemini response")
 
     json_str = match.group(1)
-
-    # 2. Common Gemini fixes
     json_str = json_str.replace("\n", " ")
-    json_str = re.sub(r",\s*}", "}", json_str)   # trailing commas
+    json_str = re.sub(r",\s*}", "}", json_str)
     json_str = re.sub(r",\s*]", "]", json_str)
 
-    # 3. Parse
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError as e:
-        raise ValueError(
-            f"Gemini returned malformed JSON.\n\n"
-            f"Cleaned JSON:\n{json_str[:1000]}"
-        ) from e
+    return json.loads(json_str)
 
 # =========================================================
 # GEMINI EXTRACTION
@@ -132,6 +130,8 @@ def extract_from_pdf(
     pdf_path: str,
     prompt_text: str,
     service_account_path: str,
+    project_id: str,
+    location: str,
     status_box
 ) -> dict:
 
@@ -141,8 +141,8 @@ def extract_from_pdf(
     )
 
     vertexai.init(
-        project=PROJECT_ID,
-        location=LOCATION,
+        project=project_id,
+        location=location,
         credentials=credentials
     )
 
@@ -151,12 +151,10 @@ def extract_from_pdf(
     with open(pdf_path, "rb") as f:
         pdf_bytes = f.read()
 
-    pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
-
     pdf_part = Part.from_dict({
         "inline_data": {
             "mime_type": "application/pdf",
-            "data": pdf_b64
+            "data": base64.b64encode(pdf_bytes).decode("utf-8")
         }
     })
 
@@ -172,7 +170,6 @@ def extract_from_pdf(
     )
 
     text = get_first_response_text_from_stream(response_stream, status_box)
-
     parsed = safe_json_loads(text)
 
     if isinstance(parsed, list) and len(parsed) == 1:
@@ -180,24 +177,42 @@ def extract_from_pdf(
 
     return parsed
 
-
 # =========================================================
 # STREAMLIT UI
 # =========================================================
 st.set_page_config(page_title="Bank Statement Extractor", layout="wide")
 
 st.title("📄 Bank Statement Extraction")
-st.caption("Prompt-driven • Schema-agnostic • JSON → CSV")
+st.caption("Gemini • Vertex AI • Auto Project Detection • JSON → CSV")
 
-# ---------- SIDEBAR ----------
+# ---------------- SIDEBAR ----------------
 with st.sidebar:
     st.header("🔐 Authentication")
+
     service_account_file = st.file_uploader(
         "Service Account JSON",
         type=["json"]
     )
 
-# ---------- LAYOUT ----------
+    project_id = None
+    if service_account_file:
+        project_id = get_project_id_from_sa(service_account_file)
+        if project_id:
+            st.text_input(
+                "GCP Project ID (auto-detected)",
+                value=project_id,
+                disabled=True
+            )
+        else:
+            st.error("❌ project_id not found in service account")
+
+    location = st.selectbox(
+        "Vertex AI Location",
+        VERTEX_LOCATIONS,
+        index=VERTEX_LOCATIONS.index("us-central1")
+    )
+
+# ---------------- MAIN ----------------
 left_col, right_col = st.columns([1, 1.4])
 
 with left_col:
@@ -218,7 +233,11 @@ with right_col:
 # =========================================================
 if extract_btn:
     if not pdf_file or not prompt_file or not service_account_file:
-        st.error("❗ Upload PDF, Prompt file, and Service Account JSON")
+        st.error("❗ Upload PDF, Prompt, and Service Account JSON")
+        st.stop()
+
+    if not project_id:
+        st.error("❗ Invalid service account (project_id missing)")
         st.stop()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -233,26 +252,26 @@ if extract_btn:
 
         prompt_text = load_prompt_from_file(prompt_file)
 
-        status_box.info("⏳ Extracting data...")
+        status_box.info("⏳ Extracting...")
 
         try:
             st.session_state.extracted_json = extract_from_pdf(
                 pdf_path,
                 prompt_text,
                 sa_path,
+                project_id,
+                location,
                 status_box
             )
             status_box.success("✅ Extraction completed")
-
         except Exception as e:
             status_box.error("❌ Extraction failed")
             st.exception(e)
 
 # =========================================================
-# RENDER RESULTS (PERSISTENT)
+# RENDER RESULTS
 # =========================================================
 if st.session_state.extracted_json:
-
     json_placeholder.json(st.session_state.extracted_json)
 
     download_json_placeholder.download_button(
