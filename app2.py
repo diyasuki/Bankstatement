@@ -2,8 +2,6 @@ import streamlit as st
 import base64
 import json
 import re
-import csv
-import io
 import tempfile
 import os
 import fitz  # PyMuPDF
@@ -17,11 +15,11 @@ from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
 # CONFIG
 # =========================================================
 VERTEX_LOCATIONS = [
-    "us-central1", "us-east1", "us-west1", "us-west4",
-    "europe-west1", "asia-east1", "asia-south1"
+    "us-central1", "us-east1", "us-west1",
+    "us-west4", "europe-west1", "asia-south1"
 ]
 
-MAX_CONCURRENCY = 4  # safe for Gemini
+MAX_CONCURRENCY = 4
 
 # =========================================================
 # SESSION STATE
@@ -42,8 +40,7 @@ def safe_json_loads(text: str):
     if not match:
         raise ValueError("No JSON found")
 
-    json_str = match.group(1)
-    json_str = re.sub(r"```json|```", "", json_str)
+    json_str = re.sub(r"```json|```", "", match.group(1))
     json_str = json_str.replace("\n", " ")
     json_str = re.sub(r",\s*}", "}", json_str)
     json_str = re.sub(r",\s*]", "]", json_str)
@@ -63,9 +60,9 @@ def extract_pages(pdf_path):
     doc = fitz.open(pdf_path)
     pages = []
     for i in range(len(doc)):
-        page_pdf = fitz.open()
-        page_pdf.insert_pdf(doc, from_page=i, to_page=i)
-        pages.append((i, page_pdf.write()))
+        single = fitz.open()
+        single.insert_pdf(doc, from_page=i, to_page=i)
+        pages.append((i, single.write()))
     return pages
 
 
@@ -84,9 +81,15 @@ def merge_page_results(results):
     return merged
 
 # =========================================================
-# GEMINI STREAMING (SYNC)
+# GEMINI STREAMING (SYNC – NO STREAMLIT CALLS)
 # =========================================================
-def call_gemini_stream_sync(pdf_bytes, prompt, model, page_index, progress_cb=None):
+def call_gemini_stream_sync(
+    pdf_bytes,
+    prompt,
+    model,
+    page_index,
+    progress_queue=None
+):
     part = Part.from_dict({
         "inline_data": {
             "mime_type": "application/pdf",
@@ -107,14 +110,13 @@ def call_gemini_stream_sync(pdf_bytes, prompt, model, page_index, progress_cb=No
     for chunk in stream:
         if hasattr(chunk, "text") and chunk.text:
             text += chunk.text
-            if progress_cb:
-                progress_cb(page_index)
+            if progress_queue:
+                progress_queue.put_nowait(page_index)
 
-    parsed = safe_json_loads(text)
-    return page_index, parsed
+    return page_index, safe_json_loads(text)
 
 # =========================================================
-# GEMINI STREAMING (ASYNC WRAPPER)
+# ASYNC WRAPPER
 # =========================================================
 async def call_gemini_stream_async(
     pdf_bytes,
@@ -122,7 +124,7 @@ async def call_gemini_stream_async(
     model,
     semaphore,
     page_index,
-    progress_cb
+    progress_queue
 ):
     async with semaphore:
         return await asyncio.to_thread(
@@ -131,11 +133,59 @@ async def call_gemini_stream_async(
             prompt,
             model,
             page_index,
-            progress_cb
+            progress_queue
         )
 
 # =========================================================
-# EXTRACTION MODES
+# ASYNC PARALLEL EXTRACTION (STREAMLIT SAFE)
+# =========================================================
+async def extract_parallel_pages_streaming_async(
+    pdf_path,
+    prompt,
+    creds,
+    project_id,
+    location,
+    progress_bar,
+    status_box
+):
+    vertexai.init(project=project_id, location=location, credentials=creds)
+    model = GenerativeModel("gemini-2.5-flash")
+
+    pages = extract_pages(pdf_path)
+    total_pages = len(pages)
+
+    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+    progress_queue = asyncio.Queue()
+    completed_pages = set()
+
+    async def progress_watcher():
+        while len(completed_pages) < total_pages:
+            page_idx = await progress_queue.get()
+            completed_pages.add(page_idx)
+            progress_bar.progress(len(completed_pages) / total_pages)
+            status_box.info(f"📄 Processing page {page_idx + 1}/{total_pages}")
+
+    watcher_task = asyncio.create_task(progress_watcher())
+
+    tasks = [
+        call_gemini_stream_async(
+            pdf_bytes=b,
+            prompt=prompt,
+            model=model,
+            semaphore=semaphore,
+            page_index=i,
+            progress_queue=progress_queue
+        )
+        for i, b in pages
+    ]
+
+    results = await asyncio.gather(*tasks)
+    await watcher_task
+
+    return merge_page_results(results)
+
+# =========================================================
+# FULL DOCUMENT (SINGLE CALL)
 # =========================================================
 def extract_full_document(pdf_path, prompt, creds, project_id, location):
     vertexai.init(project=project_id, location=location, credentials=creds)
@@ -147,44 +197,13 @@ def extract_full_document(pdf_path, prompt, creds, project_id, location):
     _, result = call_gemini_stream_sync(pdf_bytes, prompt, model, 0)
     return result
 
-
-async def extract_parallel_pages_streaming_async(
-    pdf_path,
-    prompt,
-    creds,
-    project_id,
-    location,
-    progress_cb
-):
-    vertexai.init(project=project_id, location=location, credentials=creds)
-    model = GenerativeModel("gemini-2.5-flash")
-
-    pages = extract_pages(pdf_path)
-    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
-
-    tasks = [
-        call_gemini_stream_async(
-            pdf_bytes=b,
-            prompt=prompt,
-            model=model,
-            semaphore=semaphore,
-            page_index=i,
-            progress_cb=progress_cb
-        )
-        for i, b in pages
-    ]
-
-    results = await asyncio.gather(*tasks)
-    return merge_page_results(results)
-
 # =========================================================
 # STREAMLIT UI
 # =========================================================
 st.set_page_config(page_title="Async Gemini PDF Extractor", layout="wide")
 st.title("📄 Async Gemini PDF Extraction")
-st.caption("Async • Streaming • Page-safe • Ordered merge")
+st.caption("Parallel • Streaming • Page-safe • Ordered")
 
-# ---------------- SIDEBAR ----------------
 with st.sidebar:
     service_account_file = st.file_uploader("Service Account JSON", type=["json"])
 
@@ -200,19 +219,18 @@ with st.sidebar:
         index=1
     )
 
-# ---------------- MAIN ----------------
 left, right = st.columns([1, 1.4])
 
 with left:
     pdf_file = st.file_uploader("Upload PDF", type=["pdf"])
     prompt_file = st.file_uploader("Upload Prompt (.txt)", type=["txt"])
     run = st.button("🚀 Run Extraction", use_container_width=True)
-    status = st.empty()
+    status_box = st.empty()
     progress_bar = st.progress(0.0)
 
 with right:
     output = st.empty()
-    dl_json = st.empty()
+    download = st.empty()
 
 # =========================================================
 # ACTION
@@ -222,7 +240,6 @@ if run:
         st.error("Upload PDF, Prompt, and Service Account JSON")
         st.stop()
 
-    # Write service account to disk
     with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as sa_tmp:
         sa_tmp.write(service_account_file.getvalue())
         sa_path = sa_tmp.name
@@ -238,14 +255,6 @@ if run:
             f.write(pdf_file.read())
 
         prompt = prompt_file.read().decode()
-        total_pages = len(fitz.open(pdf_path))
-
-        completed_pages = set()
-
-        def on_progress(page_idx):
-            completed_pages.add(page_idx)
-            progress_bar.progress(len(completed_pages) / total_pages)
-            status.info(f"📄 Processing page {page_idx + 1}/{total_pages}")
 
         try:
             if "Parallel" in mode:
@@ -256,7 +265,8 @@ if run:
                         creds,
                         project_id,
                         location,
-                        on_progress
+                        progress_bar,
+                        status_box
                     )
                 )
             else:
@@ -268,10 +278,10 @@ if run:
                     location
                 )
 
-            status.success("✅ Extraction completed")
+            status_box.success("✅ Extraction completed")
 
         except Exception as e:
-            status.error("❌ Extraction failed")
+            status_box.error("❌ Extraction failed")
             st.exception(e)
 
 # =========================================================
@@ -280,7 +290,7 @@ if run:
 if st.session_state.extracted_json:
     output.json(st.session_state.extracted_json)
 
-    dl_json.download_button(
+    download.download_button(
         "⬇ Download JSON",
         json.dumps(st.session_state.extracted_json, indent=2),
         "output.json",
