@@ -7,7 +7,7 @@ import io
 import tempfile
 import os
 import fitz  # PyMuPDF
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
 
 from google.oauth2 import service_account
 import vertexai
@@ -21,7 +21,7 @@ VERTEX_LOCATIONS = [
     "europe-west1", "asia-east1", "asia-south1"
 ]
 
-MAX_PARALLEL_WORKERS = 4   # Safe default for Vertex
+MAX_CONCURRENCY = 4  # safe for Gemini
 
 # =========================================================
 # SESSION STATE
@@ -62,16 +62,31 @@ def safe_json_loads(text: str):
 def extract_pages(pdf_path):
     doc = fitz.open(pdf_path)
     pages = []
-
     for i in range(len(doc)):
-        page = doc[i]
-        pdf_bytes = fitz.open(stream=page.get_pdf_bytes(), filetype="pdf").write()
-        pages.append((i, pdf_bytes))
-
+        page_pdf = fitz.open()
+        page_pdf.insert_pdf(doc, from_page=i, to_page=i)
+        pages.append((i, page_pdf.write()))
     return pages
 
 
-def call_gemini(pdf_bytes, prompt, model, status_box, page_index=None):
+def merge_page_results(results):
+    merged = {}
+    arrays = {}
+
+    for _, page_data in sorted(results, key=lambda x: x[0]):
+        for k, v in page_data.items():
+            if isinstance(v, list):
+                arrays.setdefault(k, []).extend(v)
+            elif k not in merged or merged[k] in (None, "", {}):
+                merged[k] = v
+
+    merged.update(arrays)
+    return merged
+
+# =========================================================
+# GEMINI STREAMING (SYNC)
+# =========================================================
+def call_gemini_stream_sync(pdf_bytes, prompt, model, page_index, progress_cb=None):
     part = Part.from_dict({
         "inline_data": {
             "mime_type": "application/pdf",
@@ -89,69 +104,85 @@ def call_gemini(pdf_bytes, prompt, model, status_box, page_index=None):
     )
 
     text = ""
-    for c in stream:
-        if hasattr(c, "text"):
-            text += c.text
+    for chunk in stream:
+        if hasattr(chunk, "text") and chunk.text:
+            text += chunk.text
+            if progress_cb:
+                progress_cb(page_index)
 
     parsed = safe_json_loads(text)
     return page_index, parsed
 
-
 # =========================================================
-# MERGE LOGIC (ORDER-SAFE)
+# GEMINI STREAMING (ASYNC WRAPPER)
 # =========================================================
-def merge_page_results(results):
-    merged = {}
-    arrays = {}
-
-    for _, page_data in sorted(results, key=lambda x: x[0]):
-        for k, v in page_data.items():
-            if isinstance(v, list):
-                arrays.setdefault(k, []).extend(v)
-            elif k not in merged or merged[k] in (None, "", {}):
-                merged[k] = v
-
-    merged.update(arrays)
-    return merged
-
+async def call_gemini_stream_async(
+    pdf_bytes,
+    prompt,
+    model,
+    semaphore,
+    page_index,
+    progress_cb
+):
+    async with semaphore:
+        return await asyncio.to_thread(
+            call_gemini_stream_sync,
+            pdf_bytes,
+            prompt,
+            model,
+            page_index,
+            progress_cb
+        )
 
 # =========================================================
 # EXTRACTION MODES
 # =========================================================
-def extract_full_document(pdf_path, prompt, creds, project_id, location, status_box):
+def extract_full_document(pdf_path, prompt, creds, project_id, location):
     vertexai.init(project=project_id, location=location, credentials=creds)
     model = GenerativeModel("gemini-2.5-flash")
 
     with open(pdf_path, "rb") as f:
         pdf_bytes = f.read()
 
-    _, result = call_gemini(pdf_bytes, prompt, model, status_box)
+    _, result = call_gemini_stream_sync(pdf_bytes, prompt, model, 0)
     return result
 
 
-def extract_parallel_pages(pdf_path, prompt, creds, project_id, location, status_box):
+async def extract_parallel_pages_streaming_async(
+    pdf_path,
+    prompt,
+    creds,
+    project_id,
+    location,
+    progress_cb
+):
     vertexai.init(project=project_id, location=location, credentials=creds)
     model = GenerativeModel("gemini-2.5-flash")
 
     pages = extract_pages(pdf_path)
-    results = []
+    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
-        futures = [
-            executor.submit(call_gemini, b, prompt, model, status_box, i)
-            for i, b in pages
-        ]
+    tasks = [
+        call_gemini_stream_async(
+            pdf_bytes=b,
+            prompt=prompt,
+            model=model,
+            semaphore=semaphore,
+            page_index=i,
+            progress_cb=progress_cb
+        )
+        for i, b in pages
+    ]
 
-        for future in as_completed(futures):
-            results.append(future.result())
-
+    results = await asyncio.gather(*tasks)
     return merge_page_results(results)
 
 # =========================================================
 # STREAMLIT UI
 # =========================================================
-st.set_page_config(page_title="Bank Statement Extractor", layout="wide")
-st.title("📄 Bank Statement Extraction")
+st.set_page_config(page_title="Async Gemini PDF Extractor", layout="wide")
+st.title("📄 Async Gemini PDF Extraction")
+st.caption("Async • Streaming • Page-safe • Ordered merge")
 
 # ---------------- SIDEBAR ----------------
 with st.sidebar:
@@ -162,9 +193,10 @@ with st.sidebar:
         st.text_input("Project ID", project_id, disabled=True)
 
     location = st.selectbox("Vertex AI Location", VERTEX_LOCATIONS)
+
     mode = st.radio(
         "Extraction Mode",
-        ["Full Document (Single Call)", "Parallel Page Processing"],
+        ["Full Document (Single Call)", "Parallel Pages (Async Streaming)"],
         index=1
     )
 
@@ -175,23 +207,28 @@ with left:
     pdf_file = st.file_uploader("Upload PDF", type=["pdf"])
     prompt_file = st.file_uploader("Upload Prompt (.txt)", type=["txt"])
     run = st.button("🚀 Run Extraction", use_container_width=True)
-    status_box = st.empty()
+    status = st.empty()
+    progress_bar = st.progress(0.0)
 
 with right:
     output = st.empty()
     dl_json = st.empty()
-    dl_csv = st.empty()
 
 # =========================================================
 # ACTION
 # =========================================================
 if run:
     if not all([pdf_file, prompt_file, service_account_file]):
-        st.error("Upload PDF, Prompt, and Service Account")
+        st.error("Upload PDF, Prompt, and Service Account JSON")
         st.stop()
 
+    # Write service account to disk
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as sa_tmp:
+        sa_tmp.write(service_account_file.getvalue())
+        sa_path = sa_tmp.name
+
     creds = service_account.Credentials.from_service_account_file(
-        tempfile.NamedTemporaryFile(delete=False, suffix=".json").name,
+        sa_path,
         scopes=["https://www.googleapis.com/auth/cloud-platform"]
     )
 
@@ -201,21 +238,40 @@ if run:
             f.write(pdf_file.read())
 
         prompt = prompt_file.read().decode()
+        total_pages = len(fitz.open(pdf_path))
+
+        completed_pages = set()
+
+        def on_progress(page_idx):
+            completed_pages.add(page_idx)
+            progress_bar.progress(len(completed_pages) / total_pages)
+            status.info(f"📄 Processing page {page_idx + 1}/{total_pages}")
 
         try:
             if "Parallel" in mode:
-                st.session_state.extracted_json = extract_parallel_pages(
-                    pdf_path, prompt, creds, project_id, location, status_box
+                st.session_state.extracted_json = asyncio.run(
+                    extract_parallel_pages_streaming_async(
+                        pdf_path,
+                        prompt,
+                        creds,
+                        project_id,
+                        location,
+                        on_progress
+                    )
                 )
             else:
                 st.session_state.extracted_json = extract_full_document(
-                    pdf_path, prompt, creds, project_id, location, status_box
+                    pdf_path,
+                    prompt,
+                    creds,
+                    project_id,
+                    location
                 )
 
-            status_box.success("✅ Extraction completed")
+            status.success("✅ Extraction completed")
 
         except Exception as e:
-            status_box.error("❌ Extraction failed")
+            status.error("❌ Extraction failed")
             st.exception(e)
 
 # =========================================================
@@ -227,5 +283,6 @@ if st.session_state.extracted_json:
     dl_json.download_button(
         "⬇ Download JSON",
         json.dumps(st.session_state.extracted_json, indent=2),
-        "output.json"
+        "output.json",
+        mime="application/json"
     )
