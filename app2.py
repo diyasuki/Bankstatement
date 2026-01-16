@@ -8,6 +8,7 @@ import tempfile
 import os
 import fitz  # PyMuPDF
 import asyncio
+import time
 
 from google.oauth2 import service_account
 import vertexai
@@ -21,6 +22,7 @@ VERTEX_LOCATIONS = [
     "us-west4", "europe-west1", "asia-south1"
 ]
 MAX_CONCURRENCY = 4
+MAX_RETRIES_PER_PAGE = 2
 
 # =========================================================
 # SESSION STATE
@@ -34,136 +36,40 @@ if "extracted_json" not in st.session_state:
 def get_project_id_from_sa(uploaded_file):
     sa = json.loads(uploaded_file.getvalue().decode("utf-8"))
     return sa.get("project_id")
-def transactions_to_csv(data: dict) -> str:
-    """
-    Convert extracted bank statement JSON to CSV
-    with ONE ROW PER TRANSACTION.
-    """
 
-    if not isinstance(data, dict):
-        return ""
-
-    transactions = data.get("transactions", [])
-    if not transactions:
-        return ""
-
-    output = io.StringIO()
-
-    # Base (repeated) fields
-    base_fields = {
-        "bank_name": data.get("bank_name"),
-        "account_holder_name": data.get("account_holder_name"),
-        "account_number": data.get("account_number"),
-        "currency": data.get("currency"),
-        "statement_from": (data.get("statement_period") or {}).get("from"),
-        "statement_to": (data.get("statement_period") or {}).get("to"),
-    }
-
-    rows = []
-    for txn in transactions:
-        row = base_fields.copy()
-        row.update({
-            "txn_date": txn.get("date"),
-            "description": txn.get("description"),
-            "amount": txn.get("amount"),
-            "balance": txn.get("balance"),
-            "type": txn.get("type"),
-            "category": txn.get("category"),
-        })
-        rows.append(row)
-
-    fieldnames = [
-        "bank_name",
-        "account_holder_name",
-        "account_number",
-        "currency",
-        "statement_from",
-        "statement_to",
-        "txn_date",
-        "description",
-        "amount",
-        "balance",
-        "type",
-        "category",
-    ]
-
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(rows)
-
-    return output.getvalue()
 
 def safe_json_loads(text: str):
-    match = re.search(r"(\{[\s\S]*$|\[[\s\S]*$)", text)
-    if not match:
-        raise ValueError("No JSON found in Gemini response")
+    text = re.sub(r"```json|```", "", text).strip()
 
-    json_str = re.sub(r"```json|```", "", match.group(1))
-    json_str = json_str.replace("\n", " ")
-    json_str = re.sub(r",\s*}", "}", json_str)
-    json_str = re.sub(r",\s*]", "]", json_str)
-
-    for i in range(len(json_str), 0, -1):
+    # Strategy 1: normal JSON block
+    match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
+    if match:
         try:
-            candidate = json_str[:i]
-            if candidate.count("{") == candidate.count("}"):
-                return json.loads(candidate)
+            return json.loads(match.group(1))
+        except Exception:
+            pass
+
+    # Strategy 2: progressive trim
+    for i in range(len(text), 0, -1):
+        snippet = text[:i]
+        try:
+            if snippet.count("{") == snippet.count("}"):
+                return json.loads(snippet)
         except Exception:
             continue
 
-    raise ValueError("Unrecoverable malformed JSON")
+    # Strategy 3: force close braces
+    open_b = text.count("{")
+    close_b = text.count("}")
+    if open_b > close_b:
+        fixed = text + ("}" * (open_b - close_b))
+        try:
+            return json.loads(fixed)
+        except Exception:
+            pass
 
+    raise ValueError("UNRECOVERABLE_JSON")
 
-# =========================================================
-# JSON → CSV (SCHEMA-AGNOSTIC)
-# =========================================================
-def flatten_json(obj, parent_key="", sep="."):
-    items = {}
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            new_key = f"{parent_key}{sep}{k}" if parent_key else k
-            items.update(flatten_json(v, new_key, sep))
-    elif isinstance(obj, list):
-        items[parent_key] = json.dumps(obj)
-    else:
-        items[parent_key] = obj
-    return items
-
-
-def json_to_csv_string(data) -> str:
-    output = io.StringIO()
-    rows = []
-
-    if isinstance(data, list):
-        for item in data:
-            rows.append(flatten_json(item))
-
-    elif isinstance(data, dict):
-        flat = flatten_json(data)
-        array_fields = {
-            k: v for k, v in flat.items()
-            if isinstance(v, list)
-        }
-
-        if array_fields:
-            for k, v in array_fields.items():
-                for item in v:
-                    row = flat.copy()
-                    row.pop(k)
-                    row.update(flatten_json(item, k))
-                    rows.append(row)
-        else:
-            rows.append(flat)
-
-    if not rows:
-        return ""
-
-    fieldnames = sorted({k for row in rows for k in row.keys()})
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(rows)
-
-    return output.getvalue()
 
 # =========================================================
 # PDF PAGE SPLIT
@@ -178,61 +84,93 @@ def extract_pages(pdf_path):
     return pages
 
 
+# =========================================================
+# MERGE PAGE RESULTS (DICT / LIST SAFE)
+# =========================================================
 def merge_page_results(results):
-    merged_dict = {}
-    merged_lists = []
+    merged = {}
+    all_txns = []
 
     for _, page_data in sorted(results, key=lambda x: x[0]):
         if isinstance(page_data, list):
-            merged_lists.extend(page_data)
-        elif isinstance(page_data, dict):
+            all_txns.extend(page_data)
+            continue
+
+        if isinstance(page_data, dict):
             for k, v in page_data.items():
                 if isinstance(v, list):
-                    merged_dict.setdefault(k, []).extend(v)
+                    if k == "transactions":
+                        all_txns.extend(v)
+                    else:
+                        merged.setdefault(k, []).extend(v)
                 else:
-                    if k not in merged_dict or merged_dict[k] in (None, "", {}):
-                        merged_dict[k] = v
+                    if k not in merged or merged[k] in (None, "", {}):
+                        merged[k] = v
 
-    if merged_dict == {} and merged_lists:
-        return merged_lists
+    if all_txns:
+        merged["transactions"] = all_txns
 
-    if merged_lists:
-        merged_dict.setdefault("items", []).extend(merged_lists)
+    return merged
 
-    return merged_dict
 
 # =========================================================
-# GEMINI STREAMING (SYNC)
+# GEMINI STREAMING (SYNC, RETRY SAFE)
 # =========================================================
-def call_gemini_stream_sync(pdf_bytes, prompt, model, page_index, progress_queue):
-    part = Part.from_dict({
-        "inline_data": {
-            "mime_type": "application/pdf",
-            "data": base64.b64encode(pdf_bytes).decode()
-        }
-    })
+def call_gemini_stream_sync(
+    pdf_bytes,
+    prompt,
+    model,
+    page_index,
+    progress_queue,
+    max_retries=MAX_RETRIES_PER_PAGE
+):
+    for attempt in range(max_retries + 1):
+        try:
+            part = Part.from_dict({
+                "inline_data": {
+                    "mime_type": "application/pdf",
+                    "data": base64.b64encode(pdf_bytes).decode()
+                }
+            })
 
-    stream = model.generate_content(
-        contents=[part, prompt],
-        generation_config=GenerationConfig(
-            temperature=0.0,
-            response_mime_type="application/json"
-        ),
-        stream=True
-    )
+            stream = model.generate_content(
+                contents=[part, prompt],
+                generation_config=GenerationConfig(
+                    temperature=0.0,
+                    response_mime_type="application/json"
+                ),
+                stream=True
+            )
 
-    text = ""
-    for chunk in stream:
-        if hasattr(chunk, "text") and chunk.text:
-            text += chunk.text
-            progress_queue.put_nowait(page_index)
+            text = ""
+            for chunk in stream:
+                if hasattr(chunk, "text") and chunk.text:
+                    text += chunk.text
+                    progress_queue.put_nowait(page_index)
 
-    return page_index, safe_json_loads(text)
+            return page_index, safe_json_loads(text)
+
+        except Exception:
+            if attempt == max_retries:
+                # FINAL FALLBACK — DO NOT CRASH PIPELINE
+                return page_index, {
+                    "transactions": [],
+                    "flags": {"ocr_uncertain": True}
+                }
+            time.sleep(1.5)
+
 
 # =========================================================
 # ASYNC WRAPPER
 # =========================================================
-async def call_gemini_stream_async(pdf_bytes, prompt, model, semaphore, page_index, progress_queue):
+async def call_gemini_stream_async(
+    pdf_bytes,
+    prompt,
+    model,
+    semaphore,
+    page_index,
+    progress_queue
+):
     async with semaphore:
         return await asyncio.to_thread(
             call_gemini_stream_sync,
@@ -243,11 +181,18 @@ async def call_gemini_stream_async(pdf_bytes, prompt, model, semaphore, page_ind
             progress_queue
         )
 
+
 # =========================================================
-# ASYNC EXTRACTION
+# ASYNC PARALLEL EXTRACTION (STREAMLIT SAFE)
 # =========================================================
 async def extract_parallel_pages_streaming_async(
-    pdf_path, prompt, creds, project_id, location, progress_bar, status_box
+    pdf_path,
+    prompt,
+    creds,
+    project_id,
+    location,
+    progress_bar,
+    status_box
 ):
     vertexai.init(project=project_id, location=location, credentials=creds)
     model = GenerativeModel("gemini-2.5-flash")
@@ -257,14 +202,14 @@ async def extract_parallel_pages_streaming_async(
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
     progress_queue = asyncio.Queue()
-    completed_pages = set()
+    completed = set()
 
     async def progress_watcher():
-        while len(completed_pages) < total_pages:
-            page_idx = await progress_queue.get()
-            completed_pages.add(page_idx)
-            progress_bar.progress(len(completed_pages) / total_pages)
-            status_box.info(f"📄 Processing page {page_idx + 1}/{total_pages}")
+        while len(completed) < total_pages:
+            idx = await progress_queue.get()
+            completed.add(idx)
+            progress_bar.progress(len(completed) / total_pages)
+            status_box.info(f"📄 Processing page {idx + 1}/{total_pages}")
 
     watcher = asyncio.create_task(progress_watcher())
 
@@ -277,6 +222,51 @@ async def extract_parallel_pages_streaming_async(
     await watcher
 
     return merge_page_results(results)
+
+
+# =========================================================
+# TRANSACTIONS → CSV (ONE ROW PER TXN)
+# =========================================================
+def transactions_to_csv(data: dict) -> str:
+    if not isinstance(data, dict):
+        return ""
+
+    txns = data.get("transactions", [])
+    if not txns:
+        return ""
+
+    base = {
+        "bank_name": data.get("bank_name"),
+        "account_holder_name": data.get("account_holder_name"),
+        "account_number": data.get("account_number"),
+        "currency": data.get("currency"),
+        "statement_from": (data.get("statement_period") or {}).get("from"),
+        "statement_to": (data.get("statement_period") or {}).get("to"),
+    }
+
+    output = io.StringIO()
+    rows = []
+
+    for idx, t in enumerate(txns, start=1):
+        row = base.copy()
+        row.update({
+            "txn_index": idx,
+            "date": t.get("date"),
+            "description": t.get("description"),
+            "amount": t.get("amount"),
+            "balance": t.get("balance"),
+            "type": t.get("type"),
+            "category": t.get("category"),
+        })
+        rows.append(row)
+
+    fieldnames = list(rows[0].keys())
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+
+    return output.getvalue()
+
 
 # =========================================================
 # STREAMLIT UI
@@ -303,8 +293,8 @@ with left:
 
 with right:
     json_out = st.empty()
-    download_json = st.empty()
-    download_csv = st.empty()
+    dl_json = st.empty()
+    dl_csv = st.empty()
 
 # =========================================================
 # ACTION
@@ -330,40 +320,36 @@ if run:
 
         prompt = prompt_file.read().decode()
 
-        try:
-            st.session_state.extracted_json = asyncio.run(
-                extract_parallel_pages_streaming_async(
-                    pdf_path,
-                    prompt,
-                    creds,
-                    project_id,
-                    location,
-                    progress_bar,
-                    status_box
-                )
+        st.session_state.extracted_json = asyncio.run(
+            extract_parallel_pages_streaming_async(
+                pdf_path,
+                prompt,
+                creds,
+                project_id,
+                location,
+                progress_bar,
+                status_box
             )
-            status_box.success("✅ Extraction completed")
-        except Exception as e:
-            status_box.error("❌ Extraction failed")
-            st.exception(e)
+        )
+
+        status_box.success("✅ Extraction completed")
 
 # =========================================================
-# RENDER + DOWNLOADS
+# RENDER + DOWNLOAD
 # =========================================================
 if st.session_state.extracted_json:
     json_out.json(st.session_state.extracted_json)
 
-    download_json.download_button(
+    dl_json.download_button(
         "⬇️ Download JSON",
         json.dumps(st.session_state.extracted_json, indent=2),
         "output.json",
         mime="application/json"
     )
 
-    download_csv.download_button(
-    "⬇️ Download Transactions CSV",
-    transactions_to_csv(st.session_state.extracted_json),
-    "transactions.csv",
-    mime="text/csv"
-)
-
+    dl_csv.download_button(
+        "⬇️ Download Transactions CSV",
+        transactions_to_csv(st.session_state.extracted_json),
+        "transactions.csv",
+        mime="text/csv"
+    )
