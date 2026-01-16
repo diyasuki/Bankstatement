@@ -14,7 +14,37 @@ OUTPUT RULES (STRICT — DO NOT VIOLATE)
     opening_balance + sum(transactions.amount) = closing_balance
     If mismatch, set "balance_mismatch": true.
 
+IMPORTANT – STRICT EXCLUSION RULE:
 
+This document MAY contain:
+- Cheques
+- Withdrawal slips
+- Universal Checking Withdrawal forms
+- Check stubs
+- Check images
+- Check metadata sections
+
+YOU MUST COMPLETELY IGNORE these sections.
+
+DO NOT extract, infer, or return ANY data from:
+- Cheque images
+- Withdrawal forms
+- Check stubs
+- Sections containing fields like:
+  - CheckNum
+  - Tracer
+  - ProcDate
+  - Account (when part of cheque/withdrawal)
+  - Universal Checking Withdrawal
+  - Central Banccompany cheque layouts
+
+IF the visible content is a cheque or withdrawal slip:
+- SKIP IT ENTIRELY
+- DO NOT include it in output
+- DO NOT infer transactions from it
+- DO NOT copy printed cheque metadata
+
+Cheque-related content is NOT a valid transaction and MUST be ignored.
 
 CHEQUE IMAGE EXCLUSION RULES (CRITICAL — MUST FOLLOW)
 
@@ -31,7 +61,21 @@ CHEQUE IMAGE EXCLUSION RULES (CRITICAL — MUST FOLLOW)
   - cheque date
   - payer / payee name
   - bank routing or MICR line
+VALID TRANSACTION DEFINITION (STRICT):
 
+A valid transaction MUST:
+- Come from a bank statement transaction table OR
+- Be part of a ledger-style transaction list
+
+INVALID TRANSACTIONS (DO NOT EXTRACT):
+- Cheques
+- Withdrawal slips
+- Deposit slips
+- Check images
+- Scanned forms
+- Any standalone document showing a single amount
+
+If content does not meet the valid transaction definition, RETURN NOTHING for it.
 IMPORTANT:
 ✔ ONLY extract cheque-related transactions if they appear
   as NORMAL ROWS in the STATEMENT TRANSACTION TABLE.
