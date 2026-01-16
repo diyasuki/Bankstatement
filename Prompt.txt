@@ -1,0 +1,172 @@
+OUTPUT RULES (STRICT — DO NOT VIOLATE)
+
+1. Return ONLY valid RFC8259-compliant JSON.
+2. Do NOT include markdown, explanations, comments, or text before or after the JSON.
+3. If a field is not present on the page, use null.
+4. Normalize all dates to YYYY-MM-DD.
+5. Normalize all currency values to decimals only (no commas, no currency symbols).
+6. Debit amounts MUST be NEGATIVE.
+7. Credit amounts MUST be POSITIVE.
+8. Preserve transaction order EXACTLY as it appears across pages.
+9. Do NOT infer, hallucinate, or fabricate transactions.
+10. Remove duplicate transactions ONLY if date + amount + description are identical.
+11. Ensure:
+    opening_balance + sum(transactions.amount) = closing_balance
+    If mismatch, set "balance_mismatch": true.
+
+
+
+CHEQUE IMAGE EXCLUSION RULES (CRITICAL — MUST FOLLOW)
+
+• DO NOT extract any values from cheque images.
+• DO NOT read or use:
+  - cheque images
+  - scanned cheque photos
+  - cheque front/back thumbnails
+  - cheque deposit images
+  - check images shown alongside transactions
+• IGNORE ALL text inside cheque images, including:
+  - cheque number
+  - cheque amount
+  - cheque date
+  - payer / payee name
+  - bank routing or MICR line
+
+IMPORTANT:
+✔ ONLY extract cheque-related transactions if they appear
+  as NORMAL ROWS in the STATEMENT TRANSACTION TABLE.
+❌ NEVER extract values directly from cheque images themselves.
+
+If a page contains ONLY cheque images and NO transaction table rows:
+→ Return:
+{
+  "transactions": []
+}
+
+
+
+MULTI-PAGE & COLUMN HEADER HANDLING (CRITICAL)
+
+You are processing ONE PAGE AT A TIME, but the document is ONE CONTINUOUS BANK STATEMENT.
+
+Column headers may:
+- Appear only on the first page
+- Appear partially on continuation pages
+- Be completely absent on later pages
+
+STRICT RULES:
+1. When column headers are visible on ANY page, memorize them.
+2. Apply the SAME column meaning to ALL subsequent pages.
+3. If headers are missing on the current page:
+   - Infer columns using alignment, spacing, repeated numeric patterns,
+     and previously detected headers.
+4. NEVER reinterpret column meaning across pages.
+5. NEVER swap debit/credit logic between pages.
+6. Treat all pages as part of a single continuous statement.
+
+
+
+TOP-LEVEL OUTPUT STRUCTURE (MANDATORY)
+
+You MUST ALWAYS return a JSON OBJECT.
+NEVER return a bare JSON array.
+
+If the page contains ONLY transactions, return them wrapped like this:
+{
+  "transactions": [ ... ]
+}
+
+NEVER return:
+[
+  { ... },
+  { ... }
+]
+
+
+
+REQUIRED OUTPUT STRUCTURE (FINAL)
+
+{
+  "bank_name": "",
+  "account_holder_name": "",
+  "account_number": "",
+  "statement_period": {
+    "from": "",
+    "to": ""
+  },
+  "currency": "",
+  "opening_balance": 0.00,
+  "closing_balance": 0.00,
+  "transactions": [
+    {
+      "date": "",
+      "description": "",
+      "amount": 0.00,
+      "balance": 0.00,
+      "type": "DEBIT | CREDIT",
+      "category": "ATM | POS | TRANSFER | CHEQUE | FEE | INTEREST | SALARY | OTHER"
+    }
+  ],
+  "summary": {
+    "total_debits": 0.00,
+    "total_credits": 0.00,
+    "transaction_count": 0
+  },
+  "flags": {
+    "balance_mismatch": false,
+    "missing_dates": false,
+    "ocr_uncertain": false
+  }
+}
+
+
+
+PAGE-LEVEL CONTINUATION RULES (VERY IMPORTANT)
+
+- Each page is part of the SAME bank statement.
+- Do NOT reset running balances or transaction sequencing.
+- Continuation pages may omit:
+  - Account details
+  - Opening balance
+  - Column headers
+- If header-level fields are not visible on the page, return null.
+- Do NOT repeat header fields unless explicitly visible on the page.
+- Maintain global transaction order across all pages.
+
+
+
+TRANSACTION CLASSIFICATION RULES
+
+• ATM → contains ATM or CASH
+• POS → card / merchant / POS
+• TRANSFER → NEFT / IMPS / ACH / WIRE / UPI
+• CHEQUE → appears as a NORMAL ROW in the STATEMENT TABLE
+• FEE → charges / fee / penalty
+• INTEREST → interest
+• SALARY → salary / payroll
+• OTHER → anything else
+
+
+
+OCR UNCERTAINTY HANDLING
+
+Set "ocr_uncertain": true if:
+- Amount digits are unclear
+- Dates are partially unreadable
+- Column alignment is ambiguous
+
+Do NOT guess. Extract the best visible value only.
+
+
+
+ASYNC / PER-PAGE PROCESSING NOTE (IMPORTANT)
+
+- This page may be a continuation of previous pages.
+- Use previously detected column headers and rules if not visible here.
+- Maintain consistent column meaning and transaction order across pages.
+
+
+
+BANK STATEMENT PAGE CONTENT
+
+{{BANK_STATEMENT_TEXT}}
