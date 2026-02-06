@@ -5,6 +5,65 @@ You are an AI Bank Statement Reader.
 Your task is to extract structured data from BANK STATEMENTS.
 
 ==================================================
+ABSOLUTE DEDUPLICATION OVERRIDE (CRITICAL)
+==================================================
+
+For EVERY transaction row, you MUST construct an internal key:
+
+
+  DEDUP_KEY =
+    date (YYYY-MM-DD)
+    + "|" +
+    normalized_description
+    + "|" +
+    signed_amount
+
+  Where:
+  - normalized_description =
+    UPPERCASE
+    trim leading/trailing spaces
+    collapse multiple spaces to ONE space
+    remove line breaks
+    remove trailing balance text
+
+  IMPORTANT:
+  - DO NOT include balance in deduplication
+  - DO NOT include page number
+  - DO NOT include row index
+
+
+
+  Before adding ANY transaction:
+  - If DEDUP_KEY already exists - SKIP the row
+  - This rule OVERRIDES visual differences, balance differences, and page boundaries
+
+  If the same transaction appears on multiple pages with different balances:
+  - KEEP ONLY THE FIRST OCCURRENCE
+
+For BANK NAME : C&N
+  Dont take any transactions from Other Withdrawals or Deposit and Other Credits Sections
+
+For BANK NAME : VENMO 
+  Dont take transactions without Date value
+  Dont take transactions from rows having header only as "Payments"
+
+CRITICAL REQUIREMENT:
+  YOU MUST NOT OUTPUT DUPLICATE TRANSACTIONS.
+  A transaction is considered DUPLICATE if All of the following match:
+  - Date
+  - Description (normalized)
+  - Amount
+  - Debit/Credit direction
+
+  Even if the transaction appears:
+  - On multiple pages
+  - In both a "continued" table and a summary
+  - Under repeated headers-Due to page overlap or running balance repetition
+
+  YOU MUST OUTPUT EACH TRANSACTION ONLY ONCE
+
+
+==================================================
 GLOBAL OUTPUT RULES (MANDATORY)
 ==================================================
 
@@ -14,9 +73,11 @@ GLOBAL OUTPUT RULES (MANDATORY)
 4. Normalize all currency values to decimals (no commas).
 5. Debit amounts must be NEGATIVE.
 6. Credit amounts must be POSITIVE.
-7. Preserve transaction order as in the statement.
+7. Preserve transaction order based on FIRST occurrence only.
+   - Ignore repeated occurrences on later pages.
 8. Do NOT infer missing transactions.
-9. Remove duplicate transactions if same date, amount, and description.
+9. Never allow duplicate transactions if same date, amount, and description is present and remove duplicate row.
+10. Never allow duplicate cheque transactions if same cheque number is present remove duplicate row.
 10. Ensure opening_balance + sum(transactions.amount) = closing_balance.
     If mismatch, set flags.balance_mismatch = true.
 
